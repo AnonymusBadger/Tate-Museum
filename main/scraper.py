@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+from progress.bar import Bar
 
 # import socket
 from asyncio import sleep
@@ -25,7 +26,6 @@ logging.basicConfig(
 
 async def get_page(url, session):
     logging.debug(f"Trying {url}")
-    # await sleep(randint(0, 2))
     async with session.get(url) as resp:
         logging.debug(f"Got response [{resp.status}] for URL: {url}")
         html = await resp.read()
@@ -62,11 +62,11 @@ async def get_one(base_url, *args, **kwargs):
     return links
 
 
-async def get_artwork_urls(base_url, query, session):
+async def get_artworks(base_url, query, session):
     start = await get_page(query, session)
     total_artworks = (
         start.find("span", class_="card-group__range-last").find_parent().text
-    )
+    ).replace(",", "")
     temp = re.findall(r"\d+", total_artworks)
     res = list(map(int, temp))[-1]
     if res <= 60:
@@ -74,16 +74,18 @@ async def get_artwork_urls(base_url, query, session):
     else:
         pager = start.findAll("li", class_="pager__item")
         total = int(pager[-2].text)
-    tasks = [
-        get_one(base_url, f"{query}&page={i}", session) for i in range(1, total + 1)
-    ]
-    tasks_list = [tasks[i : i + 100] for i in range(0, len(tasks), 100)]
-    artworks = list()
-    for tasks in tasks_list:
-        artworks_urls = await asyncio.gather(*tasks)
-        artworks.append([url for urls in artworks_urls for url in urls])
-    artworks = [artwork_url for data_list in artworks for artwork_url in data_list]
-    return artworks
+    data = list()
+    logging.info("Parsing Data")
+    for i in Bar("[INFO] Progress", suffix="%(index)s/%(max)s - ETA: %(eta_td)s").iter(
+        range(1, total + 1)
+    ):
+        # print(f" Page {i} out of {total}\r", end="")
+        artworks_urls = await get_one(base_url, f"{query}&page={i}", session)
+        tasks = [parse_data(artwork_url, session) for artwork_url in artworks_urls]
+        resp = await asyncio.gather(*tasks)
+        for _ in resp:
+            data.append(_)
+    return data
 
 
 async def parse_data(url, session):
@@ -152,17 +154,7 @@ async def Session(query, path):
         timeout=timeout, connector=aiohttp.TCPConnector(ssl=False)
     ) as session:
         # Pasring pages of search query
-        logging.info("Getting urls of all artworks in the query")
-        artworks_urls = await get_artwork_urls(base_url, query, session)
-        logging.info("Done!")
-        # Parsing artwork pages
-        logging.info("Parsing Artworks Data")
-        tasks = [parse_data(artwork_url, session) for artwork_url in artworks_urls]
-        tasks_list = [tasks[i : i + 100] for i in range(0, len(tasks), 100)]
-        data = list()
-        for tasks in tasks_list:
-            data.append(await asyncio.gather(*tasks))
-        data = [artwork_data for data_list in data for artwork_data in data_list]
+        data = await get_artworks(base_url, query, session)
         logging.info("Done!")
         # Creating csv file
         logging.info("Saving to file")
@@ -195,7 +187,15 @@ async def Session(query, path):
             get_image(url=tuple_[1], title=tuple_[0], path=path, session=session)
             for tuple_ in download_data
         ]
-        await asyncio.gather(*tasks)
+        bar = Bar(
+            "[INFO] Progress",
+            suffix="%(index)s/%(max)s - ETA: %(eta_td)s",
+            max=len(tasks),
+        )
+        for task in asyncio.as_completed(tasks):
+            await task
+            bar.next()
+        bar.finish()
 
 
 def main(url, path):
