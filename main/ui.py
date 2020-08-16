@@ -1,7 +1,6 @@
 import os
 import sys
 
-import database
 from checkers import make_folder, numeric_selector, url_check
 from decorators import body, footer, head
 from fixers import set_first_page
